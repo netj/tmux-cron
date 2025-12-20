@@ -3,6 +3,7 @@
 # dependencies = [
 #   "croniter",
 #   "pyyaml",
+#   "tmuxp",
 # ]
 # ///
 
