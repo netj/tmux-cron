@@ -1,0 +1,171 @@
+#!/usr/bin/env uv run
+# /// script
+# dependencies = [
+#   "croniter",
+#   "pyyaml",
+# ]
+# ///
+
+import os
+import sys
+import subprocess
+import shutil
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+# Configuration
+BASE_DIR = Path.home() / ".tmux-cron"
+CRONTAB_FILE = BASE_DIR / "crontab"
+YAML_FILE = BASE_DIR / "session.yaml"
+SESSION_NAME = "tmux-cron"
+RUNNER_PATH = os.path.abspath(__file__)
+
+# Ensure directory exists
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+def print_help():
+    print(f"""
+tmux-cron: A crontab-to-tmuxp replacement for modern macOS permissions.
+
+Usage:
+  tmux-cron          - Sync config and start/restart tmux session
+  tmux-cron -e       - Edit the tmux-cron crontab
+  tmux-cron -l       - List current tmux-cron crontab
+  tmux-cron -h       - Show this help message
+
+  Internal:
+  tmux-cron --run    - [Used by tmux panes] The cron-runner logic
+    """)
+
+def run_editor():
+    """Simulates crontab -e behavior."""
+    if not CRONTAB_FILE.exists():
+        CRONTAB_FILE.write_text("# Min Hour Dom Mon Dow Command\n# */5 * * * * echo 'hello world'\n")
+    
+    editor = os.environ.get('EDITOR', 'nano')
+    tmp = tempfile.NamedTemporaryFile(suffix=".tmp", delete=False)
+    shutil.copyfile(CRONTAB_FILE, tmp.name)
+    
+    subprocess.call([editor, tmp.name])
+    
+    # Simple Syntax/Compile Check
+    try:
+        with open(tmp.name, 'r') as f:
+            lines = f.readlines()
+            # Try to parse to ensure it's valid before saving
+            generate_yaml(lines, dry_run=True)
+        
+        shutil.copyfile(tmp.name, CRONTAB_FILE)
+        print("crontab updated.")
+        # Trigger sync after edit
+        sync_and_launch()
+    except Exception as e:
+        print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
+    finally:
+        os.unlink(tmp.name)
+
+def generate_yaml(lines, dry_run=False):
+    """Converts cron lines to tmuxp YAML format."""
+    yaml_lines = [
+        f"session_name: {SESSION_NAME}",
+        "windows:"
+    ]
+    
+    valid_jobs = 0
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        
+        parts = line.split(maxsplit=5)
+        if len(parts) < 6:
+            continue
+        
+        schedule = " ".join(parts[:5])
+        command = parts[5].replace('"', '\\"')
+        
+        # Validation check using croniter
+        from croniter import croniter
+        if not croniter.is_valid(schedule):
+            raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
+
+        window_name = f"job_{i}_{parts[5].split('/')[-1][:10]}"
+        yaml_lines.extend([
+            f"  - window_name: {window_name}",
+            f"    panes:",
+            f"      - {RUNNER_PATH} --run \"{schedule}\" \"{command}\""
+        ])
+        valid_jobs += 1
+
+    if valid_jobs == 0 and not dry_run:
+        print("Warning: No active jobs found in crontab.")
+    
+    content = "\n".join(yaml_lines)
+    if not dry_run:
+        YAML_FILE.write_text(content)
+    return content
+
+def sync_and_launch():
+    """Checks if restart is needed and launches tmuxp."""
+    if not CRONTAB_FILE.exists():
+        print("No crontab found. Use 'tmux-cron -e' to create one.")
+        return
+
+    # Check if YAML is stale or missing
+    is_stale = not YAML_FILE.exists() or CRONTAB_FILE.stat().st_mtime > YAML_FILE.stat().st_mtime
+    
+    if is_stale:
+        print("Crontab changed. Regenerating config...")
+        generate_yaml(CRONTAB_FILE.read_text().splitlines())
+        
+        # Kill existing session to reload changes
+        print(f"Restarting tmux session: {SESSION_NAME}")
+        subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], stderr=subprocess.DEVNULL)
+    
+    # Check if session is already running
+    check = subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], stderr=subprocess.DEVNULL)
+    if check.returncode != 0:
+        subprocess.run(["tmuxp", "load", "-d", str(YAML_FILE)])
+        print(f"Session '{SESSION_NAME}' launched in background.")
+    else:
+        print(f"Session '{SESSION_NAME}' is already running and up to date.")
+
+def cron_runner(schedule, command):
+    """The logic that lives inside each tmux pane."""
+    from croniter import croniter
+    import time
+
+    iter = croniter(schedule, datetime.now())
+    print(f"--- Runner Started ---\nCmd: {command}\nSch: {schedule}\n")
+
+    while True:
+        next_run = iter.get_next(datetime)
+        sleep_time = (next_run - datetime.now()).total_seconds()
+        
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Executing...")
+        subprocess.run(command, shell=True)
+
+# --- Main CLI Logic ---
+if __name__ == "__main__":
+    args = sys.argv[1:]
+
+    if not args:
+        sync_and_launch()
+    elif args[0] == "-e":
+        run_editor()
+    elif args[0] == "-l":
+        if CRONTAB_FILE.exists():
+            print(CRONTAB_FILE.read_text())
+        else:
+            print("Crontab is empty.")
+    elif args[0] == "-h" or args[0] == "--help":
+        print_help()
+    elif args[0] == "--run" and len(args) == 3:
+        cron_runner(args[1], args[2])
+    else:
+        print("Unknown command.")
+        print_help()
