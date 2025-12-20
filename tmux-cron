@@ -20,7 +20,7 @@ BASE_DIR = Path.home() / ".tmux-cron"
 CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 SESSION_NAME = "tmux-cron"
-# Properly handle spaces in the script path for the YAML output
+# Properly handle spaces in the script path (e.g., iCloud "Mobile Documents")
 RUNNER_PATH = f'"{os.path.abspath(__file__)}"'
 
 # Ensure directory exists
@@ -31,10 +31,10 @@ def print_help():
 tmux-cron: A crontab-to-tmuxp replacement for modern macOS permissions.
 
 Usage:
-  tmux-cron                - Sync config and start/restart tmux session
+  tmux-cron                - Sync, launch, and attach (Default)
   tmux-cron -e, --edit     - Edit the tmux-cron crontab
   tmux-cron -l, --list     - List current tmux-cron crontab
-  tmux-cron -a, --attach   - Attach to the tmux-cron session
+  tmux-cron -a, --attach   - Attach to the existing session
   tmux-cron -h, --help     - Show this help message
 
   Internal:
@@ -58,7 +58,7 @@ def run_editor():
         
         shutil.copyfile(tmp.name, CRONTAB_FILE)
         print("crontab updated.")
-        sync_and_launch()
+        sync_and_launch(attach=True)
     except Exception as e:
         print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
     finally:
@@ -89,9 +89,7 @@ def generate_yaml(lines, dry_run=False):
         if not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        # Simpler title: just the command basename or first 20 chars
         cmd_title = command.split('/')[-1].split(' ')[0][:20]
-        
         run_cmd = f"{RUNNER_PATH} --run \"{schedule}\" \"{command}\""
 
         if use_windows:
@@ -102,7 +100,6 @@ def generate_yaml(lines, dry_run=False):
         else:
             panes.append(run_cmd)
 
-    # If using panes, bundle them into a single window with tiled layout
     if not use_windows and panes:
         yaml_dict["windows"].append({
             "window_name": "cron-jobs",
@@ -117,7 +114,7 @@ def generate_yaml(lines, dry_run=False):
             
     return yaml_dict
 
-def sync_and_launch():
+def sync_and_launch(attach=True):
     if not CRONTAB_FILE.exists():
         print("No crontab found. Use 'tmux-cron -e' to create one.")
         return
@@ -131,15 +128,20 @@ def sync_and_launch():
     
     check = subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], stderr=subprocess.DEVNULL)
     if check.returncode != 0:
-        # Use uv run to ensure tmuxp is available from the script's env
         subprocess.run(["uv", "run", "tmuxp", "load", "-d", str(YAML_FILE)])
-        print(f"Session '{SESSION_NAME}' launched.")
-    else:
-        print(f"Session '{SESSION_NAME}' is already running.")
+    
+    if attach:
+        subprocess.run(["tmux", "attach", "-t", SESSION_NAME])
 
 def cron_runner(schedule, command):
     from croniter import croniter
     import time
+
+    # ANSI Clear Screen and OSC title update
+    # \033]0;TITLE\007 sets the window/pane title in most multiplexers
+    title = command.split('/')[-1][:15]
+    sys.stdout.write(f"\033c\033]0;{title}\007")
+    sys.stdout.flush()
 
     iter = croniter(schedule, datetime.now())
     print(f"--- Runner Started ---\nCmd: {command}\nSch: {schedule}\n")
@@ -151,14 +153,16 @@ def cron_runner(schedule, command):
         if sleep_time > 0:
             time.sleep(sleep_time)
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Executing...")
+        # Output Format: 2025-12-20 Sat 14:00:00
+        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
+        print(f"[{timestamp}] Executing...")
         subprocess.run(command, shell=True)
 
 if __name__ == "__main__":
     args = sys.argv[1:]
 
     if not args:
-        sync_and_launch()
+        sync_and_launch(attach=True)
     elif args[0] in ["-e", "--edit"]:
         run_editor()
     elif args[0] in ["-l", "--list"]:
