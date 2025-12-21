@@ -201,7 +201,38 @@ if __name__ == "__main__":
         print(CRONTAB_FILE.read_text() if CRONTAB_FILE.exists() else "Empty.")
     elif args[0] in ["-a", "--attach"]:
         sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
+    elif args[0] == "--migrate-from-crontab":
+        # Capture crontab output (need subprocess for capture_output)
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("No existing crontab found or error reading crontab.")
+            sys.exit(1)
+
+        existing_crontab = result.stdout
+        if not existing_crontab.strip():
+            print("Existing crontab is empty. Nothing to migrate.")
+            sys.exit(0)
+
+        print("Current crontab:")
+        print("-" * 60)
+        print(existing_crontab)
+        print("-" * 60)
+
+        response = input("\nMigrate this crontab to tmux-cron? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Migration cancelled.")
+            sys.exit(0)
+
+        CRONTAB_FILE.write_text(existing_crontab)
+        print(f"Crontab migrated to {CRONTAB_FILE}")
+
+        remove = input("Remove old crontab (crontab -r)? [y/N]: ").strip().lower()
+        if remove == 'y':
+            sh("crontab -r")
+            print("Old crontab removed.")
+
+        sync_and_launch(attach=True)
     elif args[0] == "--run" and len(args) == 3:
         cron_runner(args[1], args[2])
     else:
-        print("Usage: tmux-cron [-e|-l|-a]")
+        print("Usage: tmux-cron [-e|-l|-a|--migrate-from-crontab]")

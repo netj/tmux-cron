@@ -40,16 +40,21 @@ This will:
 
 ## Migrating from cron
 
-To migrate your existing crontab to tmux-cron:
+The easiest way to migrate your existing crontab to tmux-cron:
 
 ```bash
-crontab -l | pbcopy; tmux-cron -e  # :r!pbpaste in vim; crontab -r
+tmux-cron --migrate-from-crontab
 ```
 
-This workflow:
-1. Copies your current crontab to clipboard
-2. Opens tmux-cron editor (paste your crontab with `:r!pbpaste` in vim)
-3. After saving, removes your old crontab with `crontab -r`
+### Manual migration (alternative)
+
+If you prefer to edit while migrating:
+
+```bash
+crontab -l | pbcopy
+tmux-cron -e  # :r!pbpaste in vim
+crontab -r
+```
 
 ## Usage
 
@@ -90,6 +95,12 @@ tmux-cron -l
 tmux-cron -a
 # or just:
 tmux-cron
+```
+
+### Migrate from crontab
+
+```bash
+tmux-cron --migrate-from-crontab
 ```
 
 ### Session layout
