@@ -37,8 +37,18 @@ def get_frequency_category(schedule):
     
     from croniter import croniter
     try:
+        # Normalize aliases for the delta check
+        lookup = {
+            "@hourly": "0 * * * *", 
+            "@daily": "0 0 * * *", 
+            "@weekly": "0 0 * * 0", 
+            "@monthly": "0 0 1 * *", 
+            "@yearly": "0 0 1 1 *"
+        }
+        clean_sched = lookup.get(schedule, schedule)
+        
         now = datetime.now()
-        it = croniter(schedule, now)
+        it = croniter(clean_sched, now)
         next_run = it.get_next(datetime)
         after_that = it.get_next(datetime)
         delta = after_that - next_run
@@ -48,13 +58,15 @@ def get_frequency_category(schedule):
         if delta <= timedelta(weeks=1):
             return "occasional"
         return "rare"
-    except:
+    except Exception:
         return "misc"
 
 def generate_assets(lines, dry_run=False):
     import yaml
     
-    # Categories for windows
+    # Initialize yaml_dict early to avoid UnboundLocalError
+    yaml_dict = {"session_name": SESSION_NAME, "windows": []}
+    
     categories = {
         "startup": {"name": "startup", "panes": []},
         "frequent": {"name": "daily-hourly", "panes": []},
@@ -70,6 +82,7 @@ def generate_assets(lines, dry_run=False):
         if not line or line.startswith("#"):
             continue
         
+        # Environment variables
         if "=" in line and not line.startswith("@") and not line[0].isdigit() and "*" not in line.split('=')[0]:
             env_lines.append(f'export {line}')
             continue
@@ -79,9 +92,7 @@ def generate_assets(lines, dry_run=False):
         
         schedule = parts[0]
         if schedule.startswith("@") and schedule != "@reboot":
-            # Convert standard @daily, @weekly etc for the frequency checker
-            lookup = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *", "@yearly": "0 0 1 1 *"}
-            cat = get_frequency_category(lookup.get(schedule, "0 0 * * *"))
+            cat = get_frequency_category(schedule)
             command = " ".join(parts[1:])
         elif schedule == "@reboot":
             cat = "startup"
@@ -97,23 +108,22 @@ def generate_assets(lines, dry_run=False):
 
     env_lines.append('exec "$@"')
     
+    # Build the window structure
+    class LiteralStr(str): pass
+    yaml.add_representer(LiteralStr, lambda d, data: d.represent_scalar('tag:yaml.org,2002:str', data, style='|'))
+
+    for cat_id in ["startup", "frequent", "occasional", "rare", "misc"]:
+        cat = categories[cat_id]
+        if cat["panes"]:
+            yaml_dict["windows"].append({
+                "window_name": cat["name"],
+                "layout": "tiled",
+                "panes": [LiteralStr(p) for p in cat["panes"]]
+            })
+
     if not dry_run:
         BRIDGE_SCRIPT.write_text("\n".join(env_lines))
         BRIDGE_SCRIPT.chmod(0o755)
-        
-        class LiteralStr(str): pass
-        yaml.add_representer(LiteralStr, lambda d, data: d.represent_scalar('tag:yaml.org,2002:str', data, style='|'))
-
-        yaml_dict = {"session_name": SESSION_NAME, "windows": []}
-        for cat_id in ["startup", "frequent", "occasional", "rare", "misc"]:
-            cat = categories[cat_id]
-            if cat["panes"]:
-                yaml_dict["windows"].append({
-                    "window_name": cat["name"],
-                    "layout": "tiled",
-                    "panes": [LiteralStr(p) for p in cat["panes"]]
-                })
-        
         with open(YAML_FILE, "w") as f:
             yaml.dump(yaml_dict, f, default_flow_style=False)
             
@@ -174,11 +184,14 @@ if __name__ == "__main__":
             shutil.copyfile(CRONTAB_FILE, tmp.name)
             sh('${EDITOR:-nano} "$TARGET"', TARGET=tmp.name)
             try:
-                with open(tmp.name, 'r') as f: generate_assets(f.readlines(), dry_run=True)
+                with open(tmp.name, 'r') as f: 
+                    generate_assets(f.readlines(), dry_run=True)
                 shutil.copyfile(tmp.name, CRONTAB_FILE)
                 sync_and_launch(attach=True)
-            except Exception as e: print(f"Error: {e}")
-            finally: os.unlink(tmp.name)
+            except Exception as e: 
+                print(f"Error during crontab validation: {e}")
+            finally: 
+                os.unlink(tmp.name)
     elif args[0] in ["-l", "--list"]:
         print(CRONTAB_FILE.read_text() if CRONTAB_FILE.exists() else "Empty.")
     elif args[0] in ["-a", "--attach"]:
