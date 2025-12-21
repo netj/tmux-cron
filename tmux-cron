@@ -21,18 +21,19 @@ CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 BRIDGE_SCRIPT = BASE_DIR / "bridge.sh"
 SESSION_NAME = "tmux-cron"
-RUNNER_PATH = os.path.abspath(__file__)
+# Current path of this script
+SELF_PATH = os.path.abspath(__file__)
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 def sh(cmd: str, **env_vars):
+    """Executes a bash command with stdio inheritance and custom env."""
     current_env = os.environ.copy()
     current_env.update({k: str(v) for k, v in env_vars.items()})
     return subprocess.run(["bash", "-c", cmd], env=current_env, stdout=sys.stdout, stderr=sys.stderr)
 
 def generate_assets(lines, dry_run=False):
     import yaml
-    
     yaml_dict = {"session_name": SESSION_NAME, "windows": []}
     panes = []
     env_lines = ["#!/bin/bash"]
@@ -42,7 +43,7 @@ def generate_assets(lines, dry_run=False):
         if not line or line.startswith("#"):
             continue
         
-        # Parse ENV=VALUE
+        # Parse ENV=VALUE lines
         if "=" in line and not line.startswith("@") and not line[0].isdigit() and "*" not in line.split('=')[0]:
             env_lines.append(f'export {line}')
             continue
@@ -61,18 +62,17 @@ def generate_assets(lines, dry_run=False):
         if schedule != "@reboot" and not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        # The runner call for tmuxp
-        run_cmd = f'"{RUNNER_PATH}" --run "{schedule}" "{command}"'
+        # Use the environment variable $TMUX_CRON instead of a hardcoded path
+        run_cmd = f'"$TMUX_CRON" --run "{schedule}" "{command}"'
         panes.append(run_cmd)
 
-    # Finish bridge script: it exports vars then runs args
     env_lines.append('exec "$@"')
     
     if not dry_run:
         BRIDGE_SCRIPT.write_text("\n".join(env_lines))
         BRIDGE_SCRIPT.chmod(0o755)
         
-        # Use Literal Block Scalar for the tmuxp command
+        # YAML setup for block scalars
         class LiteralStr(str): pass
         def literal_presenter(dumper, data):
             return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
@@ -100,8 +100,9 @@ def sync_and_launch(attach=True):
         generate_assets(CRONTAB_FILE.read_text().splitlines())
         sh('tmux kill-session -t "$SESSION" 2>/dev/null', SESSION=SESSION_NAME)
     
-    sh('tmux has-session -t "$SESSION" 2>/dev/null || uv run tmuxp load -d "$CONFIG"', 
-       SESSION=SESSION_NAME, CONFIG=str(YAML_FILE))
+    # Inject SELF_PATH into the TMUX_CRON env var so the YAML panes know where to look
+    sh('tmux has-session -t "$SESSION" 2>/dev/null || TMUX_CRON="$SELF" uv run tmuxp load -d "$CONFIG"', 
+       SESSION=SESSION_NAME, CONFIG=str(YAML_FILE), SELF=SELF_PATH)
     
     if attach:
         sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
@@ -119,7 +120,6 @@ def cron_runner(schedule, command):
     def execute():
         timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
         print(f"[{timestamp}] Executing...")
-        # Run through the bridge to pick up crontab environment variables
         sh('"$BRIDGE" bash -c "$CMD"', BRIDGE=str(BRIDGE_SCRIPT), CMD=command)
 
     if schedule == "@reboot":
