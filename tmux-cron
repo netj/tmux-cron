@@ -12,6 +12,7 @@ import sys
 import subprocess
 import shutil
 import tempfile
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -25,76 +26,49 @@ RUNNER_PATH = os.path.abspath(__file__)
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 def sh(cmd: str, subprocess_run_kwargs: dict = None, **env_vars):
-    """
-    Executes a bash command. All keyword arguments are passed as env vars.
-    Inherits Python's stdout/stderr by default.
-    """
-    run_kwargs = {
-        "stdout": sys.stdout,
-        "stderr": sys.stderr,
-    }
+    run_kwargs = {"stdout": sys.stdout, "stderr": sys.stderr}
     if subprocess_run_kwargs:
         run_kwargs.update(subprocess_run_kwargs)
 
     current_env = os.environ.copy()
     current_env.update({k: str(v) for k, v in env_vars.items()})
-    
     return subprocess.run(["bash", "-c", cmd], env=current_env, **run_kwargs)
-
-def print_help():
-    print(f"""
-tmux-cron: A crontab-to-tmuxp replacement for modern macOS permissions.
-
-Usage:
-  tmux-cron                - Sync, launch, and attach (Default)
-  tmux-cron -e, --edit     - Edit the tmux-cron crontab
-  tmux-cron -l, --list     - List current tmux-cron crontab
-  tmux-cron -a, --attach   - Attach to the existing session
-  tmux-cron -h, --help     - Show this help message
-
-  Internal:
-  tmux-cron --run          - [Used by tmux panes] The cron-runner logic
-    """)
-
-def run_editor():
-    if not CRONTAB_FILE.exists():
-        CRONTAB_FILE.write_text("# Min Hour Dom Mon Dow Command\n# */5 * * * * echo 'hello world'\n")
-    
-    with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
-        shutil.copyfile(CRONTAB_FILE, tmp.name)
-        sh('${EDITOR:-nano} "$TARGET"', TARGET=tmp.name)
-        
-        try:
-            with open(tmp.name, 'r') as f:
-                lines = f.readlines()
-                generate_yaml(lines, dry_run=True)
-            shutil.copyfile(tmp.name, CRONTAB_FILE)
-            print("crontab updated.")
-            sync_and_launch(attach=True)
-        except Exception as e:
-            print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
-        finally:
-            os.unlink(tmp.name)
 
 def generate_yaml(lines, dry_run=False):
     yaml_dict = {"session_name": SESSION_NAME, "windows": []}
     panes = []
+    current_env = {}
 
     for i, line in enumerate(lines):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         
+        # Handle Environment Variable lines (e.g., PATH=/usr/local/bin)
+        if "=" in line and not line.startswith("@") and not line[0].isdigit() and "*" not in line.split('=')[0]:
+            key, val = line.split("=", 1)
+            current_env[key.strip()] = val.strip().strip('"').strip("'")
+            continue
+
         parts = line.split(maxsplit=5)
-        if len(parts) < 6: continue
+        if len(parts) < 2: continue
         
-        schedule, command = " ".join(parts[:5]), parts[5]
+        schedule = parts[0]
+        # Handle @special schedules
+        if schedule.startswith("@"):
+            command = " ".join(parts[1:])
+        else:
+            if len(parts) < 6: continue
+            schedule = " ".join(parts[:5])
+            command = parts[5]
         
         from croniter import croniter
-        if not croniter.is_valid(schedule):
+        if schedule != "@reboot" and not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        run_cmd = f'"{RUNNER_PATH}" --run "{schedule}" "{command}"'
+        # Pass current state of env vars to the runner as a JSON string
+        env_json = json.dumps(current_env)
+        run_cmd = f'"{RUNNER_PATH}" --run "{schedule}" "{command}" \'{env_json}\''
 
         if os.environ.get("TMUX_CRON_USE_WINDOWS") == "1":
             yaml_dict["windows"].append({"window_name": command.split(' ')[0][:20], "panes": [run_cmd]})
@@ -108,67 +82,73 @@ def generate_yaml(lines, dry_run=False):
         import yaml
         with open(YAML_FILE, "w") as f:
             yaml.dump(yaml_dict, f, default_flow_style=False)
-            
     return yaml_dict
 
 def sync_and_launch(attach=True):
     if not CRONTAB_FILE.exists():
         print("No crontab found. Use 'tmux-cron -e' to create one.")
         return
-
     is_stale = not YAML_FILE.exists() or CRONTAB_FILE.stat().st_mtime > YAML_FILE.stat().st_mtime
-    
     if is_stale:
         print("Crontab changed. Regenerating config...")
         generate_yaml(CRONTAB_FILE.read_text().splitlines())
-        # Use shell redirection to suppress "session not found" errors
         sh('tmux kill-session -t "$SESSION" 2>/dev/null', SESSION=SESSION_NAME)
     
     sh('tmux has-session -t "$SESSION" 2>/dev/null || uv run tmuxp load -d "$CONFIG"', 
        SESSION=SESSION_NAME, CONFIG=str(YAML_FILE))
-    
     if attach:
         sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
 
-def cron_runner(schedule, command):
+def cron_runner(schedule, command, env_json):
     from croniter import croniter
     import time
-
+    
+    job_env = json.loads(env_json)
     sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
     sys.stdout.write(f"\033c\033]2;{command}\007")
     sys.stdout.flush()
 
     print(f"tmux-cron started: {schedule} {command}\n")
 
-    iter = croniter(schedule, datetime.now())
+    # Handle @reboot: Run once and then enter an infinite sleep
+    if schedule == "@reboot":
+        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
+        print(f"[{timestamp}] @reboot executing...")
+        sh('eval "$CMD"', CMD=command, **job_env)
+        while True: time.sleep(86400)
 
+    iter = croniter(schedule, datetime.now())
     while True:
         next_run = iter.get_next(datetime)
         sleep_time = (next_run - datetime.now()).total_seconds()
-        
         if sleep_time > 0:
             time.sleep(sleep_time)
         
-        print(f"[{datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')}] Executing...")
-        sh('eval "$CMD"', CMD=command)
+        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
+        print(f"[{timestamp}] Executing...")
+        sh('eval "$CMD"', CMD=command, **job_env)
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-
     if not args:
         sync_and_launch(attach=True)
     elif args[0] in ["-e", "--edit"]:
-        run_editor()
+        # Logic for editing (same as before)
+        if not CRONTAB_FILE.exists(): CRONTAB_FILE.write_text("# @reboot echo 'Mac started'\n# MAILTO=me@test.com\n")
+        with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
+            shutil.copyfile(CRONTAB_FILE, tmp.name)
+            sh('${EDITOR:-nano} "$TARGET"', TARGET=tmp.name)
+            try:
+                with open(tmp.name, 'r') as f: generate_yaml(f.readlines(), dry_run=True)
+                shutil.copyfile(tmp.name, CRONTAB_FILE)
+                sync_and_launch(attach=True)
+            except Exception as e: print(f"Error: {e}")
+            finally: os.unlink(tmp.name)
     elif args[0] in ["-l", "--list"]:
-        if CRONTAB_FILE.exists():
-            print(CRONTAB_FILE.read_text())
-        else:
-            print("Crontab is empty.")
+        print(CRONTAB_FILE.read_text() if CRONTAB_FILE.exists() else "Empty.")
     elif args[0] in ["-a", "--attach"]:
         sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
-    elif args[0] in ["-h", "--help"]:
-        print_help()
-    elif args[0] == "--run" and len(args) == 3:
-        cron_runner(args[1], args[2])
+    elif args[0] == "--run" and len(args) == 4:
+        cron_runner(args[1], args[2], args[3])
     else:
-        print_help()
+        print("Usage: tmux-cron [-e|-l|-a|-h]")
