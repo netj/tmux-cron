@@ -12,6 +12,7 @@ import sys
 import subprocess
 import shutil
 import tempfile
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -21,7 +22,6 @@ CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 BRIDGE_SCRIPT = BASE_DIR / "bridge.sh"
 SESSION_NAME = "tmux-cron"
-# Current path of this script
 SELF_PATH = os.path.abspath(__file__)
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -62,8 +62,11 @@ def generate_assets(lines, dry_run=False):
         if schedule != "@reboot" and not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        # Use the environment variable $TMUX_CRON instead of a hardcoded path
-        run_cmd = f'"$TMUX_CRON" --run "{schedule}" "{command}"'
+        # Use shlex.quote for the internal arguments to ensure shells don't choke on spaces/quotes
+        # run_cmd construction: $TMUX_CRON --run "schedule" "command"
+        args = ["--run", schedule, command]
+        quoted_args = " ".join(shlex.quote(a) for a in args)
+        run_cmd = f'"$TMUX_CRON" {quoted_args}'
         panes.append(run_cmd)
 
     env_lines.append('exec "$@"')
@@ -72,7 +75,7 @@ def generate_assets(lines, dry_run=False):
         BRIDGE_SCRIPT.write_text("\n".join(env_lines))
         BRIDGE_SCRIPT.chmod(0o755)
         
-        # YAML setup for block scalars
+        # YAML setup for block scalars to keep the file readable
         class LiteralStr(str): pass
         def literal_presenter(dumper, data):
             return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
@@ -100,7 +103,6 @@ def sync_and_launch(attach=True):
         generate_assets(CRONTAB_FILE.read_text().splitlines())
         sh('tmux kill-session -t "$SESSION" 2>/dev/null', SESSION=SESSION_NAME)
     
-    # Inject SELF_PATH into the TMUX_CRON env var so the YAML panes know where to look
     sh('tmux has-session -t "$SESSION" 2>/dev/null || TMUX_CRON="$SELF" uv run tmuxp load -d "$CONFIG"', 
        SESSION=SESSION_NAME, CONFIG=str(YAML_FILE), SELF=SELF_PATH)
     
@@ -112,7 +114,8 @@ def cron_runner(schedule, command):
     import time
 
     sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
-    sys.stdout.write(f"\033c\033]2;{command}\007")
+    # Update title with the command (truncated for visual sanity)
+    sys.stdout.write(f"\033c\033]2;{command[:50]}\007")
     sys.stdout.flush()
 
     print(f"tmux-cron started: {schedule} {command}\n")
@@ -120,6 +123,7 @@ def cron_runner(schedule, command):
     def execute():
         timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
         print(f"[{timestamp}] Executing...")
+        # CMD is passed as a single env var, bridge runs it via bash -c
         sh('"$BRIDGE" bash -c "$CMD"', BRIDGE=str(BRIDGE_SCRIPT), CMD=command)
 
     if schedule == "@reboot":
@@ -139,7 +143,8 @@ if __name__ == "__main__":
     if not args:
         sync_and_launch(attach=True)
     elif args[0] in ["-e", "--edit"]:
-        if not CRONTAB_FILE.exists(): CRONTAB_FILE.write_text("# PATH=/usr/bin:/bin\n# @reboot echo 'Started'\n")
+        if not CRONTAB_FILE.exists(): 
+            CRONTAB_FILE.write_text("# PATH=/usr/bin:/bin\n# @reboot echo \"Mac 'Special' Start\"\n")
         with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
             shutil.copyfile(CRONTAB_FILE, tmp.name)
             sh('${EDITOR:-nano} "$TARGET"', TARGET=tmp.name)
