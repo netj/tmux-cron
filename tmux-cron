@@ -20,7 +20,6 @@ BASE_DIR = Path.home() / ".tmux-cron"
 CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 SESSION_NAME = "tmux-cron"
-# Using absolute path to this script for the tmuxp config
 RUNNER_PATH = os.path.abspath(__file__)
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,10 +47,10 @@ def run_editor():
     if not CRONTAB_FILE.exists():
         CRONTAB_FILE.write_text("# Min Hour Dom Mon Dow Command\n# */5 * * * * echo 'hello world'\n")
     
-    editor = os.environ.get('EDITOR', 'nano')
     with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
         shutil.copyfile(CRONTAB_FILE, tmp.name)
-        sh('"$1" "$2"', editor, tmp.name)
+        # Bash handles finding the editor and the file path
+        sh('${EDITOR:-nano} "$1"', tmp.name)
         
         try:
             with open(tmp.name, 'r') as f:
@@ -66,7 +65,6 @@ def run_editor():
             os.unlink(tmp.name)
 
 def generate_yaml(lines, dry_run=False):
-    use_windows = os.environ.get("TMUX_CRON_USE_WINDOWS", "0") == "1"
     yaml_dict = {"session_name": SESSION_NAME, "windows": []}
     panes = []
 
@@ -78,30 +76,22 @@ def generate_yaml(lines, dry_run=False):
         parts = line.split(maxsplit=5)
         if len(parts) < 6: continue
         
-        schedule = " ".join(parts[:5])
-        command = parts[5]
+        schedule, command = " ".join(parts[:5]), parts[5]
         
         from croniter import croniter
         if not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        # The tmuxp command needs to call this script with its absolute path
+        # The run_cmd is passed to the tmuxp yaml
         run_cmd = f'"{RUNNER_PATH}" --run "{schedule}" "{command}"'
 
-        if use_windows:
-            yaml_dict["windows"].append({
-                "window_name": command.split(' ')[0][:20],
-                "panes": [run_cmd]
-            })
+        if os.environ.get("TMUX_CRON_USE_WINDOWS") == "1":
+            yaml_dict["windows"].append({"window_name": command.split(' ')[0][:20], "panes": [run_cmd]})
         else:
             panes.append(run_cmd)
 
-    if not use_windows and panes:
-        yaml_dict["windows"].append({
-            "window_name": "cron-jobs",
-            "layout": "tiled",
-            "panes": panes
-        })
+    if not yaml_dict["windows"] and panes:
+        yaml_dict["windows"].append({"window_name": "cron-jobs", "layout": "tiled", "panes": panes})
 
     if not dry_run:
         import yaml
@@ -122,9 +112,8 @@ def sync_and_launch(attach=True):
         generate_yaml(CRONTAB_FILE.read_text().splitlines())
         sh('tmux kill-session -t "$1" 2>/dev/null', SESSION_NAME)
     
-    check = sh('tmux has-session -t "$1" 2>/dev/null', SESSION_NAME)
-    if check.returncode != 0:
-        sh('uv run tmuxp load -d "$1"', str(YAML_FILE))
+    # If session doesn't exist, load it
+    sh('tmux has-session -t "$1" 2>/dev/null || uv run tmuxp load -d "$2"', SESSION_NAME, str(YAML_FILE))
     
     if attach:
         sh('tmux attach -t "$1"', SESSION_NAME)
@@ -133,8 +122,7 @@ def cron_runner(schedule, command):
     from croniter import croniter
     import time
 
-    # Disable auto-rename for the current pane only using its ID
-    # Use ANSI OSC \033]2; for title and \033c for clear
+    # Setup the pane environment
     sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
     sys.stdout.write(f"\033c\033]2;{command}\007")
     sys.stdout.flush()
@@ -150,9 +138,7 @@ def cron_runner(schedule, command):
         if sleep_time > 0:
             time.sleep(sleep_time)
         
-        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
-        print(f"[{timestamp}] Executing...")
-        # Execute the actual cron job
+        print(f"[{datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')}] Executing...")
         sh('eval "$1"', command)
 
 if __name__ == "__main__":
