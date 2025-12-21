@@ -154,12 +154,17 @@ def cron_runner(schedule, command):
     sys.stdout.write(f"\033c\033]2;{command[:50]}\007")
     sys.stdout.flush()
 
-    print(f"tmux-cron started: {schedule} {command}\n")
+    def log(msg):
+        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
+        print(f"[{timestamp}] tmux-cron: {msg}")
+
+    sh('reset; tmux clear-history -t "$TMUX_PANE"')
+    log(f"scheduled job for {schedule}: {command}\n")
 
     def execute():
-        timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
-        print(f"[{timestamp}] Executing...")
+        log(f"starting job: {command}")
         sh('"$BRIDGE" bash -c "$CMD"', BRIDGE=str(BRIDGE_SCRIPT), CMD=command)
+        log(f"finished job: {command}")
 
     if schedule == "@reboot":
         execute()
@@ -189,7 +194,7 @@ if __name__ == "__main__":
                 shutil.copyfile(tmp.name, CRONTAB_FILE)
                 sync_and_launch(attach=True)
             except Exception as e: 
-                print(f"Error during crontab validation: {e}")
+                log(f"Error during crontab validation: {e}")
             finally: 
                 os.unlink(tmp.name)
     elif args[0] in ["-l", "--list"]:
