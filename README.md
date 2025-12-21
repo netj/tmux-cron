@@ -8,6 +8,16 @@ A tmux-based cron scheduler that runs your scheduled tasks in organized tmux pan
 
 Jobs are automatically launched at system startup via a macOS LaunchAgent.
 
+### Why?
+
+Modern macOS versions restrict cron from running scripts due to privacy and security policies, resulting in errors like:
+
+```
+bash: /Users/me/some/where/script.sh: Operation not permitted
+```
+
+By running jobs through a LaunchAgent instead of cron, tmux-cron bypasses these restrictions while providing better visibility and control over your scheduled tasks.
+
 ## Features
 
 - **Visual scheduling**: All cron jobs visible in organized tmux panes
