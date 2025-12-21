@@ -129,15 +129,15 @@ def cron_runner(schedule, command):
     from croniter import croniter
     import time
 
-    # 1. Clear Screen
-    sys.stdout.write("\033c")
+    # Disable automatic renaming for this pane so OSC titles stick
+    subprocess.run(["tmux", "set-window-option", "automatic-rename", "off"], stderr=subprocess.DEVNULL)
+
+    # ANSI OSC: \033]2; (set window/pane title) TITLE \007 (BEL)
+    # Also \033c to clear the screen
+    title = command.strip()
+    sys.stdout.write(f"\033c\033]2;{title}\007")
     sys.stdout.flush()
 
-    # 2. Set Pane Title (Using tmux command directly to avoid truncation/OSC issues)
-    # This sets the title of the specific pane to the command
-    subprocess.run(["tmux", "select-pane", "-T", f"{command[:30]}"], stderr=subprocess.DEVNULL)
-
-    # 3. Simple Header
     print(f"tmux-cron started: {schedule} {command}\n")
 
     iter = croniter(schedule, datetime.now())
@@ -149,7 +149,6 @@ def cron_runner(schedule, command):
         if sleep_time > 0:
             time.sleep(sleep_time)
         
-        # 4. Corrected Date Format
         timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
         print(f"[{timestamp}] Executing...")
         subprocess.run(command, shell=True)
