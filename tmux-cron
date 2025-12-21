@@ -24,12 +24,15 @@ RUNNER_PATH = os.path.abspath(__file__)
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-def sh(cmd: str, env_vars: dict = None, **kwargs):
-    """Executes a command with a custom environment for variable resolution."""
+def sh(cmd: str, subprocess_run_kwargs: dict = None, **env_vars):
+    """
+    Executes a bash command. All keyword arguments (except subprocess_run_kwargs)
+    are passed directly as environment variables to the bash process.
+    """
+    run_kwargs = subprocess_run_kwargs or {}
     current_env = os.environ.copy()
-    if env_vars:
-        current_env.update(env_vars)
-    return subprocess.run(["bash", "-c", cmd], env=current_env, **kwargs)
+    current_env.update({k: str(v) for k, v in env_vars.items()})
+    return subprocess.run(["bash", "-c", cmd], env=current_env, **run_kwargs)
 
 def print_help():
     print(f"""
@@ -52,8 +55,7 @@ def run_editor():
     
     with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
         shutil.copyfile(CRONTAB_FILE, tmp.name)
-        # Use $EDITOR from environment, fallback to nano
-        sh('${EDITOR:-nano} "$TARGET"', env_vars={"TARGET": tmp.name})
+        sh('${EDITOR:-nano} "$TARGET"', TARGET=tmp.name)
         
         try:
             with open(tmp.name, 'r') as f:
@@ -112,20 +114,18 @@ def sync_and_launch(attach=True):
     if is_stale:
         print("Crontab changed. Regenerating config...")
         generate_yaml(CRONTAB_FILE.read_text().splitlines())
-        sh('tmux kill-session -t "$SESSION"', env_vars={"SESSION": SESSION_NAME})
+        sh('tmux kill-session -t "$SESSION" 2>/dev/null', SESSION=SESSION_NAME)
     
-    # Launch if missing
     sh('tmux has-session -t "$SESSION" 2>/dev/null || uv run tmuxp load -d "$CONFIG"', 
-       env_vars={"SESSION": SESSION_NAME, "CONFIG": str(YAML_FILE)})
+       SESSION=SESSION_NAME, CONFIG=str(YAML_FILE))
     
     if attach:
-        sh('tmux attach -t "$SESSION"', env_vars={"SESSION": SESSION_NAME})
+        sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
 
 def cron_runner(schedule, command):
     from croniter import croniter
     import time
 
-    # $TMUX_PANE is provided by tmux; we just pass $TITLE via env
     sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
     sys.stdout.write(f"\033c\033]2;{command}\007")
     sys.stdout.flush()
@@ -142,7 +142,7 @@ def cron_runner(schedule, command):
             time.sleep(sleep_time)
         
         print(f"[{datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')}] Executing...")
-        sh('eval "$CMD"', env_vars={"CMD": command})
+        sh('eval "$CMD"', CMD=command)
 
 if __name__ == "__main__":
     args = sys.argv[1:]
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         else:
             print("Crontab is empty.")
     elif args[0] in ["-a", "--attach"]:
-        sh('tmux attach -t "$SESSION"', env_vars={"SESSION": SESSION_NAME})
+        sh('tmux attach -t "$SESSION"', SESSION=SESSION_NAME)
     elif args[0] in ["-h", "--help"]:
         print_help()
     elif args[0] == "--run" and len(args) == 3:
