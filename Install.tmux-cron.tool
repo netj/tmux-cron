@@ -21,7 +21,7 @@ chmod +x ~/.local/bin/exec-path_helper
 
 # install tmux-cron command
 path_helper=$(PATH=~/.local/bin:"$PATH"; type -p exec-path_helper)
-sed "1s:#!.* uv:#!/usr/bin/env -S $path_helper uv:" tmux-cron | tee ~/.local/bin/tmux-cron >/dev/null
+sed "1s:#!.* uv:#!/usr/bin/env -S $path_helper uv:" tmux-cron.py | tee ~/.local/bin/tmux-cron >/dev/null
 chmod +x ~/.local/bin/tmux-cron
 ~/.local/bin/tmux-cron -h
 
