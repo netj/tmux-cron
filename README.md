@@ -78,7 +78,7 @@ Opens your crontab in `$EDITOR` (defaults to nano). Example crontab:
 
 ```cron
 # Environment variables
-MAILTO=you@example.com
+MAILTO=you@example.com  # XXX email from chatty jobs not supported yet
 
 # Run at startup
 @reboot echo 'Mac Started'
@@ -135,6 +135,10 @@ Jobs are organized into tmux windows by frequency:
 2. tmux-cron parses the crontab and generates a tmuxp YAML configuration
 3. Each job runs in its own pane using [croniter](https://github.com/kiorky/croniter) for scheduling
 4. The LaunchAgent ensures the tmux session starts at login
+
+## Known Issues
+
+- `MAILTO=` and emailing the stdout/stderr from jobs to the user is not supported yet.
 
 ## License
 
