@@ -26,12 +26,19 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 def sh(cmd: str, subprocess_run_kwargs: dict = None, **env_vars):
     """
-    Executes a bash command. All keyword arguments (except subprocess_run_kwargs)
-    are passed directly as environment variables to the bash process.
+    Executes a bash command. All keyword arguments are passed as env vars.
+    Inherits Python's stdout/stderr by default.
     """
-    run_kwargs = subprocess_run_kwargs or {}
+    run_kwargs = {
+        "stdout": sys.stdout,
+        "stderr": sys.stderr,
+    }
+    if subprocess_run_kwargs:
+        run_kwargs.update(subprocess_run_kwargs)
+
     current_env = os.environ.copy()
     current_env.update({k: str(v) for k, v in env_vars.items()})
+    
     return subprocess.run(["bash", "-c", cmd], env=current_env, **run_kwargs)
 
 def print_help():
@@ -66,8 +73,8 @@ def run_editor():
             sync_and_launch(attach=True)
         except Exception as e:
             print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
-    finally:
-        os.unlink(tmp.name)
+        finally:
+            os.unlink(tmp.name)
 
 def generate_yaml(lines, dry_run=False):
     yaml_dict = {"session_name": SESSION_NAME, "windows": []}
@@ -114,6 +121,7 @@ def sync_and_launch(attach=True):
     if is_stale:
         print("Crontab changed. Regenerating config...")
         generate_yaml(CRONTAB_FILE.read_text().splitlines())
+        # Use shell redirection to suppress "session not found" errors
         sh('tmux kill-session -t "$SESSION" 2>/dev/null', SESSION=SESSION_NAME)
     
     sh('tmux has-session -t "$SESSION" 2>/dev/null || uv run tmuxp load -d "$CONFIG"', 
