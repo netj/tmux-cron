@@ -20,9 +20,14 @@ BASE_DIR = Path.home() / ".tmux-cron"
 CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 SESSION_NAME = "tmux-cron"
-RUNNER_PATH = f'"{os.path.abspath(__file__)}"'
+# Using absolute path to this script for the tmuxp config
+RUNNER_PATH = os.path.abspath(__file__)
 
 BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+def sh(cmd: str, *args: str, **kwargs):
+    """Executes a command safely using bash positional parameters."""
+    return subprocess.run(["bash", "-c", cmd, "--", *args], **kwargs)
 
 def print_help():
     print(f"""
@@ -44,23 +49,21 @@ def run_editor():
         CRONTAB_FILE.write_text("# Min Hour Dom Mon Dow Command\n# */5 * * * * echo 'hello world'\n")
     
     editor = os.environ.get('EDITOR', 'nano')
-    tmp = tempfile.NamedTemporaryFile(suffix=".tmp", delete=False)
-    shutil.copyfile(CRONTAB_FILE, tmp.name)
-    
-    subprocess.call([editor, tmp.name])
-    
-    try:
-        with open(tmp.name, 'r') as f:
-            lines = f.readlines()
-            generate_yaml(lines, dry_run=True)
+    with tempfile.NamedTemporaryFile(suffix=".tmp", delete=False) as tmp:
+        shutil.copyfile(CRONTAB_FILE, tmp.name)
+        sh('"$1" "$2"', editor, tmp.name)
         
-        shutil.copyfile(tmp.name, CRONTAB_FILE)
-        print("crontab updated.")
-        sync_and_launch(attach=True)
-    except Exception as e:
-        print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
-    finally:
-        os.unlink(tmp.name)
+        try:
+            with open(tmp.name, 'r') as f:
+                lines = f.readlines()
+                generate_yaml(lines, dry_run=True)
+            shutil.copyfile(tmp.name, CRONTAB_FILE)
+            print("crontab updated.")
+            sync_and_launch(attach=True)
+        except Exception as e:
+            print(f"Error: Invalid crontab syntax. Changes not saved.\n{e}")
+        finally:
+            os.unlink(tmp.name)
 
 def generate_yaml(lines, dry_run=False):
     use_windows = os.environ.get("TMUX_CRON_USE_WINDOWS", "0") == "1"
@@ -82,7 +85,8 @@ def generate_yaml(lines, dry_run=False):
         if not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        run_cmd = f"{RUNNER_PATH} --run \"{schedule}\" \"{command}\""
+        # The tmuxp command needs to call this script with its absolute path
+        run_cmd = f'"{RUNNER_PATH}" --run "{schedule}" "{command}"'
 
         if use_windows:
             yaml_dict["windows"].append({
@@ -116,26 +120,23 @@ def sync_and_launch(attach=True):
     if is_stale:
         print("Crontab changed. Regenerating config...")
         generate_yaml(CRONTAB_FILE.read_text().splitlines())
-        subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], stderr=subprocess.DEVNULL)
+        sh('tmux kill-session -t "$1" 2>/dev/null', SESSION_NAME)
     
-    check = subprocess.run(["tmux", "has-session", "-t", SESSION_NAME], stderr=subprocess.DEVNULL)
+    check = sh('tmux has-session -t "$1" 2>/dev/null', SESSION_NAME)
     if check.returncode != 0:
-        subprocess.run(["uv", "run", "tmuxp", "load", "-d", str(YAML_FILE)])
+        sh('uv run tmuxp load -d "$1"', str(YAML_FILE))
     
     if attach:
-        subprocess.run(["tmux", "attach", "-t", SESSION_NAME])
+        sh('tmux attach -t "$1"', SESSION_NAME)
 
 def cron_runner(schedule, command):
     from croniter import croniter
     import time
 
-    # Disable automatic renaming for this pane so OSC titles stick
-    subprocess.run(["tmux", "set-window-option", "automatic-rename", "off"], stderr=subprocess.DEVNULL)
-
-    # ANSI OSC: \033]2; (set window/pane title) TITLE \007 (BEL)
-    # Also \033c to clear the screen
-    title = command.strip()
-    sys.stdout.write(f"\033c\033]2;{title}\007")
+    # Disable auto-rename for the current pane only using its ID
+    # Use ANSI OSC \033]2; for title and \033c for clear
+    sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
+    sys.stdout.write(f"\033c\033]2;{command}\007")
     sys.stdout.flush()
 
     print(f"tmux-cron started: {schedule} {command}\n")
@@ -151,7 +152,8 @@ def cron_runner(schedule, command):
         
         timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
         print(f"[{timestamp}] Executing...")
-        subprocess.run(command, shell=True)
+        # Execute the actual cron job
+        sh('eval "$1"', command)
 
 if __name__ == "__main__":
     args = sys.argv[1:]
@@ -166,7 +168,7 @@ if __name__ == "__main__":
         else:
             print("Crontab is empty.")
     elif args[0] in ["-a", "--attach"]:
-        subprocess.run(["tmux", "attach", "-t", SESSION_NAME])
+        sh('tmux attach -t "$1"', SESSION_NAME)
     elif args[0] in ["-h", "--help"]:
         print_help()
     elif args[0] == "--run" and len(args) == 3:
