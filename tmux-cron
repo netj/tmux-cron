@@ -20,10 +20,8 @@ BASE_DIR = Path.home() / ".tmux-cron"
 CRONTAB_FILE = BASE_DIR / "crontab"
 YAML_FILE = BASE_DIR / "session.yaml"
 SESSION_NAME = "tmux-cron"
-# Properly handle spaces in the script path (e.g., iCloud "Mobile Documents")
 RUNNER_PATH = f'"{os.path.abspath(__file__)}"'
 
-# Ensure directory exists
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 def print_help():
@@ -66,21 +64,16 @@ def run_editor():
 
 def generate_yaml(lines, dry_run=False):
     use_windows = os.environ.get("TMUX_CRON_USE_WINDOWS", "0") == "1"
-    
-    yaml_dict = {
-        "session_name": SESSION_NAME,
-        "windows": []
-    }
-
+    yaml_dict = {"session_name": SESSION_NAME, "windows": []}
     panes = []
+
     for i, line in enumerate(lines):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         
         parts = line.split(maxsplit=5)
-        if len(parts) < 6:
-            continue
+        if len(parts) < 6: continue
         
         schedule = " ".join(parts[:5])
         command = parts[5]
@@ -89,12 +82,11 @@ def generate_yaml(lines, dry_run=False):
         if not croniter.is_valid(schedule):
             raise ValueError(f"Invalid schedule on line {i+1}: {schedule}")
 
-        cmd_title = command.split('/')[-1].split(' ')[0][:20]
         run_cmd = f"{RUNNER_PATH} --run \"{schedule}\" \"{command}\""
 
         if use_windows:
             yaml_dict["windows"].append({
-                "window_name": cmd_title,
+                "window_name": command.split(' ')[0][:20],
                 "panes": [run_cmd]
             })
         else:
@@ -137,14 +129,18 @@ def cron_runner(schedule, command):
     from croniter import croniter
     import time
 
-    # ANSI Clear Screen and OSC title update
-    # \033]0;TITLE\007 sets the window/pane title in most multiplexers
-    title = command.split('/')[-1][:15]
-    sys.stdout.write(f"\033c\033]0;{title}\007")
+    # 1. Clear Screen
+    sys.stdout.write("\033c")
     sys.stdout.flush()
 
+    # 2. Set Pane Title (Using tmux command directly to avoid truncation/OSC issues)
+    # This sets the title of the specific pane to the command
+    subprocess.run(["tmux", "select-pane", "-T", f"{command[:30]}"], stderr=subprocess.DEVNULL)
+
+    # 3. Simple Header
+    print(f"tmux-cron started: {schedule} {command}\n")
+
     iter = croniter(schedule, datetime.now())
-    print(f"--- Runner Started ---\nCmd: {command}\nSch: {schedule}\n")
 
     while True:
         next_run = iter.get_next(datetime)
@@ -153,7 +149,7 @@ def cron_runner(schedule, command):
         if sleep_time > 0:
             time.sleep(sleep_time)
         
-        # Output Format: 2025-12-20 Sat 14:00:00
+        # 4. Corrected Date Format
         timestamp = datetime.now().strftime('%Y-%m-%d %a %H:%M:%S')
         print(f"[{timestamp}] Executing...")
         subprocess.run(command, shell=True)
