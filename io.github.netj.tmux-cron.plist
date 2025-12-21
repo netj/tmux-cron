@@ -6,11 +6,20 @@
     <string>io.github.netj.tmux-cron</string>
     <key>ProgramArguments</key>
     <array>
+        <string>/bin/bash</string>
+        <string>-euc</string>
+        <string>eval "$(/usr/libexec/path_helper)"; exec "$@"</string>
+        <string>--</string>
         <string>/usr/local/bin/tmux-cron</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <false/>
+    <!-- for debugging: -->
+    <!-- <key>StandardOutPath</key> -->
+    <!-- <string>/tmp/tmux-cron.stdout.log</string> -->
+    <!-- <key>StandardErrorPath</key> -->
+    <!-- <string>/tmp/tmux-cron.stderr.log</string> -->
 </dict>
 </plist>
