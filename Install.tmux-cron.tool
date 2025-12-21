@@ -6,10 +6,22 @@ cd "$(dirname "$0")"
 type uv
 sw_vers
 
-# install tmux-cron command
+# install homebrew to /etc/paths.d/ such that macOS path_helper includes the path
+brew_bin=$(type -p brew); brew_bin=$(dirname "$brew_bin")
+test "$(cat /etc/paths.d/10-homebrew)" = "$brew_bin" ||
+    sudo tee /etc/paths.d/10-homebrew <<<"$brew_bin"
+
 mkdir -p ~/.local/bin
-uv_path=$(type -p uv)
-sed "1s:/usr/bin/env uv:$uv_path:" tmux-cron | tee ~/.local/bin/tmux-cron >/dev/null
+# install exec-path_helper command that helps with
+{
+    echo '#!/bin/sh'
+    echo 'set -eu; eval "$(/usr/libexec/path_helper)"; exec "$@"'
+} >~/.local/bin/exec-path_helper
+chmod +x ~/.local/bin/exec-path_helper
+
+# install tmux-cron command
+path_helper=$(PATH=~/.local/bin:"$PATH"; type -p exec-path_helper)
+sed "1s:#!.* uv:#!/usr/bin/env -S $path_helper uv:" tmux-cron | tee ~/.local/bin/tmux-cron >/dev/null
 chmod +x ~/.local/bin/tmux-cron
 ~/.local/bin/tmux-cron -h
 
