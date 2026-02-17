@@ -178,6 +178,7 @@ def sync_and_launch(attach=True):
 def cron_runner(schedule, command):
     from croniter import croniter
     import time
+    import select
 
     sh('tmux set-option -p -t "$TMUX_PANE" automatic-rename off')
     sys.stdout.write(f"\033c\033]2;{command[:50]}\007")
@@ -195,17 +196,44 @@ def cron_runner(schedule, command):
         sh('"$BRIDGE" bash -c "$CMD"', BRIDGE=str(BRIDGE_SCRIPT), CMD=command)
         log(f"finished job: {command}")
 
+    def wait_or_run(seconds=None):
+        """Wait up to `seconds` (or forever if None). Return True if 'r'+'Enter' typed."""
+        if not sys.stdin.isatty():
+            time.sleep(seconds if seconds is not None else 86400)
+            return False
+        end = datetime.now() + timedelta(seconds=seconds) if seconds is not None else None
+        while True:
+            remaining = (end - datetime.now()).total_seconds() if end is not None else 3600
+            if end is not None and remaining <= 0:
+                return False
+            r, _, _ = select.select([sys.stdin], [], [], min(1.0, remaining))
+            if r:
+                line = sys.stdin.readline().strip().lower()
+                if line == "r":
+                    return True
+
     if schedule == "@reboot":
         execute()
         while True:
-            time.sleep(86400)
+            log("type 'r' + Enter to run again")
+            if wait_or_run():
+                log("manual run triggered")
+                execute()
 
     iter = croniter(schedule, datetime.now())
     while True:
         next_run = iter.get_next(datetime)
-        sleep_time = (next_run - datetime.now()).total_seconds()
-        if sleep_time > 0:
-            time.sleep(sleep_time)
+        sleep_secs = (next_run - datetime.now()).total_seconds()
+        if sleep_secs > 0:
+            log(
+                f"next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
+                " — type 'r' + Enter to run now"
+            )
+            if wait_or_run(sleep_secs):
+                log("manual run triggered")
+                execute()
+                iter = croniter(schedule, datetime.now())
+                continue
         execute()
 
 
