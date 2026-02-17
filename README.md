@@ -28,16 +28,16 @@ By running jobs through a LaunchAgent instead of cron, tmux-cron bypasses these 
 
 ## Installation
 
-### Prerequisites
+### With Homebrew (recommended)
 
-- macOS
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [tmux](https://github.com/tmux/tmux)
-- [Homebrew](https://brew.sh/) (for path setup)
+```bash
+brew install netj/tap/tmux-cron
+brew services start tmux-cron
+```
 
-### Install
+### Manual install
 
-Run the installer:
+Prerequisites: macOS, [uv](https://docs.astral.sh/uv/), [tmux](https://github.com/tmux/tmux), [Homebrew](https://brew.sh/)
 
 ```bash
 ./Install.tmux-cron.tool
